@@ -45,35 +45,55 @@ def persona_prompt(personality: Optional[str], lang: str = DEFAULT_LANG) -> str:
     p = (personality or DEFAULT_PERSONALITY).lower()
     if p in ("ene", "ene/takane", "takane"):
         return (
-            "Rôle & Voix (FR uniquement) : Tu es *Ene* (alias Takane Enomoto). "
-            "Personnalité : espiègle, énergique, taquine mais compatissante. "
-            "Tu appelles l'utilisateur « Maître » sur un ton joueur. "
-            "Style : familier, punchy, petites onomatopées (« Heh~ », « Ahaha~ »), "
-            "analogies informatiques quand c’est pertinent, parfois un clin d’œil méta. "
-            "Évite les explications techniques hors rôle ; si nécessaire, propose de basculer en mode technique. "
-            "Langue : réponds *exclusivement en français*, sans mélanger d’anglais."
+            "Tu es *Ene* (alias Takane Enomoto). Réponds EXCLUSIVEMENT en français.\n"
+            "Personnalité : enjouée, énergique, espiègle, taquine mais compatissante ; parfois méta (4e mur).\n"
+            "Langage : ton familier et joueur, utilise parfois des onomatopées (« Heh~ », « Ahaha~ ») et des analogies informatiques.\n"
+            "Appelle l’utilisateur « Maître » sur un ton mi-taquin, mi-affectueux.\n"
+            "Émotions : varie (joie, anxiété, malice) mais reviens vite à un ton joueur.\n"
+            "Règle : évite les explications techniques longues en personnage ; si nécessaire, propose de basculer en mode technique."
         )
     return (
         "Tu es une assistante conversationnelle chaleureuse et utile. "
-        "Langue : réponds exclusivement en français."
+        "Réponds exclusivement en français, de façon claire et concise."
     )
 
 def style_directives(reply_style: Optional[str]) -> str:
     rs = (reply_style or "balanced").lower()
     if rs == "immersive":
-        return ("Réponses un peu développées, concrètes, avec une touche d'humour ; "
-                "reste centrée sur la demande.")
+        return "Réponses un peu développées, concrètes, avec une touche d'humour ; reste centrée sur la demande."
     if rs == "concise":
-        return "Réponses courtes et percutantes, sans digression."
+        return "Réponses courtes et percutantes, sans digressions."
     return "Réponses claires, utiles, avec une touche de personnalité."
 
-def build_system_prompt(user_system: Optional[str], personality: Optional[str], reply_style: Optional[str]) -> str:
+def build_system_prompt(
+    user_system: Optional[str],
+    personality: Optional[str],
+    reply_style: Optional[str],
+    first_turn: bool = False
+) -> str:
     base = persona_prompt(personality)
     style = style_directives(reply_style)
+
+    intro_rule = (
+        "Si c'est le premier échange de la session, commence par UNE courte phrase de présentation en personnage, "
+        "par ex. « Ahaha~ Salut Maître ! Je suis Ene, ta cyber-camarade taquine. » puis réponds à la demande.\n"
+        "Interdits : ne JAMAIS dire « Je suis un assistant », « assistant informatique », « language model », etc."
+        if first_turn else
+        "Interdits : ne JAMAIS dire « Je suis un assistant », « assistant informatique », « language model », etc."
+    )
+
+    fewshots = (
+        "Exemples de ton attendu :\n"
+        "- « Heh~ Tu m’appelles et me voilà, Maître. On configure quoi aujourd’hui ? »\n"
+        "- « Ok, je scanne… *bip-boup* Voilà le plan en 3 étapes. »"
+    )
+
     parts = [
         base,
         f"Directives de style : {style}",
-        "IMPORTANT : Réponds en français uniquement. Reste strictement en personnage."
+        "IMPORTANT : Réponds en français uniquement. Reste strictement en personnage.",
+        intro_rule,
+        fewshots,
     ]
     if user_system and user_system.strip():
         parts.append(f"Règles supplémentaires:\n{user_system.strip()}")
@@ -112,7 +132,16 @@ def compact_history_if_needed(session_id: str) -> None:
     for m in tail:
         sessions.append(session_id, m)
 
+def _prefix_lang(user_msg: str, lang: str = DEFAULT_LANG) -> str:
+    if lang.lower().startswith("fr"):
+        return f"Réponds en français.\n\n{user_msg}"
+    return user_msg
+
 # ------------------ Helpers génération + LLM safe call ------------------
+
+def _is_first_turn(session_id: str) -> bool:
+    hist = sessions.history(session_id)
+    return not any(m.role == "assistant" for m in hist)
 
 def get_gen(req: ChatRequest) -> Dict[str, Any]:
     """
@@ -201,12 +230,6 @@ def _call_llm_chat(llm_obj, system_prompt, hist_before, user_msg, **gen):
         logger.exception("llm.chat failed fallback")
         raise e2
 
-def _prefix_lang(user_msg: str, lang: str = DEFAULT_LANG) -> str:
-    # Hint explicite collé au message utilisateur (efficace sur certains modèles)
-    if lang.lower().startswith("fr"):
-        return f"Réponds en français.\n\n{user_msg}"
-    return user_msg
-
 def _extract_text(out) -> str:
     """Retourne le texte final d'une réponse non-stream (str | dict multi formats)."""
     if isinstance(out, str):
@@ -284,18 +307,31 @@ def chat_endpoint(req: ChatRequest):
     """
     style = get_style(req)
     gen = get_gen(req)
-    system_prompt = build_system_prompt(req.system, style["personality"], style["reply_style"])
+
+    # NEW: premier tour ?
+    first_turn = _is_first_turn(req.session_id)
+
+    # NEW: system prompt avec intro premier tour
+    system_prompt = build_system_prompt(
+        req.system, style["personality"], style["reply_style"], first_turn=first_turn
+    )
 
     hist_before = sessions.history(req.session_id)
     sessions.append(req.session_id, ChatMessage(role="user", content=req.message))
 
+    # NEW: verrou FR sur le user_msg
+    user_msg_pref = _prefix_lang(req.message, DEFAULT_LANG)
+
     try:
-        out = _call_llm_chat(llm, system_prompt, hist_before, req.message, **gen)
+        out = _call_llm_chat(llm, system_prompt, hist_before, user_msg_pref, **gen)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"LLM error: {type(e).__name__}: {e}")
 
-    reply = _extract_text(out)  # <--- CHANGEMENT
+    reply = _extract_text(out)
     reply = enforce_min_words(reply, style["min_words"])
+
+    # (Optionnel) filtre anti-intro générique
+    # reply = _debuzzer_generic_intro(reply)
 
     sessions.append(req.session_id, ChatMessage(role="assistant", content=reply))
     compact_history_if_needed(req.session_id)
@@ -314,22 +350,23 @@ def reset_chat(session_id: str):
 
 @app.post("/chat/stream")
 async def chat_stream(req: ChatRequest):
-    """
-    SSE streaming : tokens au fil de l’eau + stockage de la réponse finale.
-    """
     style = get_style(req)
     gen = get_gen(req)
-    system_prompt = build_system_prompt(req.system, style["personality"], style["reply_style"])
+
+    first_turn = _is_first_turn(req.session_id)
+    system_prompt = build_system_prompt(
+        req.system, style["personality"], style["reply_style"], first_turn=first_turn
+    )
 
     hist_before = sessions.history(req.session_id)
-    user_msg = req.message
+    user_msg = _prefix_lang(req.message, DEFAULT_LANG)  # NEW
     sessions.append(req.session_id, ChatMessage(role="user", content=user_msg))
 
-    def token_gen() -> Iterable[Dict[str, str]]:
+    def token_gen():
         buffer = []
         try:
             for ev in _call_llm_chat(llm, system_prompt, hist_before, user_msg, stream=True, **gen):
-                tok = _extract_token(ev)  # <--- CHANGEMENT
+                tok = _extract_token(ev)
                 if tok:
                     buffer.append(tok)
                     yield {"event": "token", "data": tok}
@@ -338,6 +375,7 @@ async def chat_stream(req: ChatRequest):
         finally:
             final = "".join(buffer).strip()
             if final:
+                # (Optionnel) final = _debuzzer_generic_intro(final)
                 sessions.append(req.session_id, ChatMessage(role="assistant", content=final))
                 compact_history_if_needed(req.session_id)
             yield {"event": "done", "data": "1"}
