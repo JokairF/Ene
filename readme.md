@@ -1,6 +1,4 @@
----
 
-```markdown
 # Ene – Assistant Virtuel Local
 
 [![Repo GitHub](https://img.shields.io/badge/GitHub-Ene-181717?logo=github)](https://github.com/JokairF/Ene)
