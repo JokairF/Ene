@@ -109,3 +109,9 @@ pyasn1_modules~=0.4.2
 pydantic_core~=2.33.2
 importlib_resources~=6.5.2
 py_rust_stemmers~=0.1.5
+torch
+transformers
+datasets
+peft
+accelerate
+bitsandbytes

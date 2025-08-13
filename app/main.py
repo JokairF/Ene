@@ -16,12 +16,16 @@ from app.utils.io import (
     truncate, is_first_turn, prefix_lang,
 )
 
+from app.decide_router import router as decide_router
+from app import config
+
 from app.persona.prompt import build_system_prompt, force_french_and_persona
 from app.persona.bible  import preload_bible, get_bible_snippet
 
 # --------------------- App & CORS ---------------------
 logger = logging.getLogger("uvicorn.error")
 app = FastAPI(title="Ene API")
+app.include_router(decide_router)
 
 DEFAULT_ORIGINS = [
     "http://localhost:5173","http://127.0.0.1:5173",
@@ -46,10 +50,7 @@ MAX_USER_CHARS  = 2000
 COMPACT_AFTER   = 24
 COMPACT_KEEP_LAST = 10
 
-llm = LocalLLM(model_path=os.getenv(
-    "LLM_MODEL_PATH",
-    "E:/models/Mistral-7B-Instruct-v0.2-GGUF/mistral-7b-instruct-v0.2.Q4_K_M.gguf"
-))
+llm = LocalLLM(model_path=config.MODEL_PATH)
 sessions = ChatSessions(max_turns=30)
 
 # --------------------- Génération ---------------------

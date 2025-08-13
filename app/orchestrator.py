@@ -1,6 +1,9 @@
+# Changement effectuer au niveau du EneResponse pour le remplacer par DecisionResponse de DecideRouter
+# Modification incomplète, mais fonctionnelle pour l'instant
 from .llm import LocalLLM
-from .prompts import ENE_SYSTEM_PROMPT, FEW_SHOTS
-from .models import DecisionRequest, EneResponse
+from .decide_router import DecideResponse
+from .persona.system_json_struct import build_system_prompt, fewshot_history
+from .models import DecisionRequest #EneResponse
 from .memory.store import MemoryStore
 import json
 import time
@@ -23,7 +26,7 @@ class Orchestrator:
         items = [{"text": m, "metadata": {"source": "ene_runtime", "type": "autolog", "tags": ["conversation"]}} for m in memories]
         self.memory.bulk_add("episodic", items)
 
-    def decide(self, req: DecisionRequest) -> EneResponse:
+    def decide(self, req: DecisionRequest) -> DecideResponse:
         # 1) Récupération contexte
         retrieved = ""
         if self.memory:
@@ -34,7 +37,7 @@ class Orchestrator:
         user_input = self._build_user_input(req, retrieved)
 
         # 3) Appel LLM
-        raw_output = self.llm.generate(ENE_SYSTEM_PROMPT, FEW_SHOTS, user_input)
+        raw_output = self.llm.generate(build_system_prompt(req.freedom), fewshot_history(), user_input)
 
         # 4) Parsing & fallback
         try:
@@ -56,4 +59,4 @@ class Orchestrator:
         except Exception:
             pass  # On ne fait pas planter la décision pour la mémoire
 
-        return EneResponse(**data)
+        return DecideResponse(**data)
